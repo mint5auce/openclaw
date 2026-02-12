@@ -36,6 +36,7 @@ pnpm gateway:watch
   - OpenAI Chat Completions (HTTP): [`/v1/chat/completions`](/gateway/openai-http-api).
   - OpenResponses (HTTP): [`/v1/responses`](/gateway/openresponses-http-api).
   - Tools Invoke (HTTP): [`/tools/invoke`](/gateway/tools-invoke-http-api).
+  - Home Assistant webhook (HTTP): [`POST /ha-webhook`](/gateway/home-assistant).
 - Starts a Canvas file server by default on `canvasHost.port` (default `18793`), serving `http://<gateway-host>:18793/__openclaw__/canvas/` from `~/.openclaw/workspace/canvas`. Disable with `canvasHost.enabled=false` or `OPENCLAW_SKIP_CANVAS_HOST=1`.
 - Logs to stdout; use launchd/systemd to keep it alive and rotate logs.
 - Pass `--verbose` to mirror debug logging (handshakes, req/res, events) from the log file into stdio when troubleshooting.
@@ -146,6 +147,7 @@ OPENCLAW_CONFIG_PATH=~/.openclaw/b.json OPENCLAW_STATE_DIR=~/.openclaw-b opencla
 - `system-event` — post a presence/system note (structured).
 - `send` — send a message via the active channel(s).
 - `agent` — run an agent turn (streams events back on same connection).
+- `ha.*` — Home Assistant API actions (`ha.ping`, `ha.listStates`, `ha.getState`, `ha.callService`, `ha.turnOn`, `ha.turnOff`, `ha.toggle`).
 - `node.list` — list paired + currently-connected nodes (includes `caps`, `deviceFamily`, `modelIdentifier`, `paired`, `connected`, and advertised `commands`).
 - `node.describe` — describe a node (capabilities + supported `node.invoke` commands; works for paired nodes and for currently-connected unpaired nodes).
 - `node.invoke` — invoke a command on a node (e.g. `canvas.*`, `camera.*`).
