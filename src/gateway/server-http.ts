@@ -1,5 +1,6 @@
 import type { TlsOptions } from "node:tls";
 import type { WebSocketServer } from "ws";
+import { webhookCallback } from "grammy";
 import {
   createServer as createHttpServer,
   type Server as HttpServer,
@@ -21,6 +22,8 @@ import {
 import { loadConfig } from "../config/config.js";
 import { safeEqualSecret } from "../security/secret-equal.js";
 import { handleSlackHttpRequest } from "../slack/http/index.js";
+import { resolveTelegramAccount } from "../telegram/accounts.js";
+import { createTelegramBot } from "../telegram/bot.js";
 import {
   authorizeGatewayConnect,
   isLocalDirectRequest,
@@ -32,6 +35,7 @@ import {
   handleControlUiHttpRequest,
   type ControlUiRootState,
 } from "./control-ui.js";
+import { handleHaWebhookRequest } from "./ha-webhook.js";
 import { applyHookMappings } from "./hooks-mapping.js";
 import {
   extractHookToken,
@@ -51,9 +55,18 @@ import {
 } from "./hooks.js";
 import { sendGatewayAuthFailure } from "./http-common.js";
 import { getBearerToken, getHeader } from "./http-utils.js";
+import { handleIftttWebhookRequest } from "./ifttt-webhook.js";
 import { isPrivateOrLoopbackAddress, resolveGatewayClientIp } from "./net.js";
 import { handleOpenAiHttpRequest } from "./openai-http.js";
 import { handleOpenResponsesHttpRequest } from "./openresponses-http.js";
+import {
+  isAllowedPublicWebhookRequest,
+  isPublicWebhookLockdownEnabled,
+  PUBLIC_HEALTHZ_PATH,
+  PUBLIC_TELEGRAM_WEBHOOK_PATH,
+  sendHealthz,
+  sendVague404,
+} from "./public-webhook-lockdown.js";
 import { handleToolsInvokeHttpRequest } from "./tools-invoke-http.js";
 
 type SubsystemLogger = ReturnType<typeof createSubsystemLogger>;
@@ -473,6 +486,12 @@ export function createGatewayHttpServer(opts: {
         void handleRequest(req, res);
       });
 
+  const cachedTelegram = {
+    token: "" as string,
+    secret: "" as string,
+    handler: null as null | ((req: IncomingMessage, res: ServerResponse) => unknown),
+  };
+
   async function handleRequest(req: IncomingMessage, res: ServerResponse) {
     // Don't interfere with WebSocket upgrades; ws handles the 'upgrade' event.
     if (String(req.headers.upgrade ?? "").toLowerCase() === "websocket") {
@@ -482,7 +501,88 @@ export function createGatewayHttpServer(opts: {
     try {
       const configSnapshot = loadConfig();
       const trustedProxies = configSnapshot.gateway?.trustedProxies ?? [];
-      const requestPath = new URL(req.url ?? "/", "http://localhost").pathname;
+
+      const url = new URL(req.url ?? "/", "http://localhost");
+      const requestPath = url.pathname;
+
+      // Public health check endpoint for hardened deployments.
+      if (url.pathname === PUBLIC_HEALTHZ_PATH) {
+        if (req.method === "GET" || req.method === "HEAD") {
+          sendHealthz(res);
+          return;
+        }
+        if (isPublicWebhookLockdownEnabled()) {
+          sendVague404(res);
+          return;
+        }
+      }
+
+      // Optional hardening: only allow explicitly public webhook routes on this listener.
+      if (isPublicWebhookLockdownEnabled()) {
+        if (!isAllowedPublicWebhookRequest(req, url.pathname)) {
+          sendVague404(res);
+          return;
+        }
+      }
+
+      // IFTTT inbound webhook (public; protected by path+header secrets).
+      if (await handleIftttWebhookRequest(req, res)) {
+        return;
+      }
+
+      // Home Assistant inbound webhook (header-secret authenticated).
+      if (await handleHaWebhookRequest(req, res)) {
+        return;
+      }
+
+      // Telegram webhook (public; authenticated by Telegram secret header token).
+      if (url.pathname === PUBLIC_TELEGRAM_WEBHOOK_PATH) {
+        if (req.method !== "POST") {
+          sendVague404(res);
+          return;
+        }
+        const account = resolveTelegramAccount({ cfg: configSnapshot, accountId: null });
+        const token = account.token.trim();
+        const secret =
+          typeof account.config.webhookSecret === "string"
+            ? account.config.webhookSecret.trim()
+            : "";
+        if (!token || !secret) {
+          sendVague404(res);
+          return;
+        }
+        if (
+          !cachedTelegram.handler ||
+          cachedTelegram.token !== token ||
+          cachedTelegram.secret !== secret
+        ) {
+          const bot = createTelegramBot({
+            token,
+            accountId: account.accountId,
+            config: configSnapshot,
+          });
+          cachedTelegram.token = token;
+          cachedTelegram.secret = secret;
+          cachedTelegram.handler = webhookCallback(bot, "http", {
+            secretToken: secret,
+          }) as (req: IncomingMessage, res: ServerResponse) => unknown;
+        }
+        const telegramHandler = cachedTelegram.handler;
+        if (!telegramHandler) {
+          sendVague404(res);
+          return;
+        }
+        const handled = telegramHandler(req, res);
+        if (handled && typeof (handled as Promise<unknown>).catch === "function") {
+          void (handled as Promise<unknown>).catch(() => {
+            if (!res.headersSent) {
+              res.statusCode = 500;
+            }
+            res.end();
+          });
+        }
+        return;
+      }
       if (await handleHooksRequest(req, res)) {
         return;
       }
@@ -584,10 +684,18 @@ export function createGatewayHttpServer(opts: {
         }
       }
 
+      if (isPublicWebhookLockdownEnabled()) {
+        sendVague404(res);
+        return;
+      }
       res.statusCode = 404;
       res.setHeader("Content-Type", "text/plain; charset=utf-8");
       res.end("Not Found");
     } catch {
+      if (isPublicWebhookLockdownEnabled()) {
+        sendVague404(res);
+        return;
+      }
       res.statusCode = 500;
       res.setHeader("Content-Type", "text/plain; charset=utf-8");
       res.end("Internal Server Error");
@@ -608,6 +716,10 @@ export function attachGatewayUpgradeHandler(opts: {
 }) {
   const { httpServer, wss, canvasHost, clients, resolvedAuth, rateLimiter } = opts;
   httpServer.on("upgrade", (req, socket, head) => {
+    if (isPublicWebhookLockdownEnabled()) {
+      socket.destroy();
+      return;
+    }
     void (async () => {
       if (canvasHost) {
         const url = new URL(req.url ?? "/", "http://localhost");

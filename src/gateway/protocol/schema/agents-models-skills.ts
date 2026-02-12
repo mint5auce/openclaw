@@ -207,3 +207,39 @@ export const SkillsUpdateParamsSchema = Type.Object(
   },
   { additionalProperties: false },
 );
+
+const HaServiceDataSchema = Type.Record(NonEmptyString, Type.Unknown());
+
+export const HaPingParamsSchema = Type.Object({}, { additionalProperties: false });
+
+export const HaListStatesParamsSchema = Type.Object(
+  {
+    domain: Type.Optional(NonEmptyString),
+    search: Type.Optional(NonEmptyString),
+    ttlCacheSeconds: Type.Optional(Type.Integer({ minimum: 0 })),
+  },
+  { additionalProperties: false },
+);
+
+export const HaGetStateParamsSchema = Type.Object(
+  {
+    entityId: NonEmptyString,
+  },
+  { additionalProperties: false },
+);
+
+export const HaCallServiceParamsSchema = Type.Object(
+  {
+    domain: NonEmptyString,
+    service: NonEmptyString,
+    data: Type.Optional(HaServiceDataSchema),
+  },
+  { additionalProperties: false },
+);
+
+export const HaServiceActionParamsSchema = Type.Object(
+  {
+    entityId: NonEmptyString,
+  },
+  { additionalProperties: false },
+);

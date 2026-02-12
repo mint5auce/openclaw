@@ -10,6 +10,7 @@ import { connectHandlers } from "./server-methods/connect.js";
 import { cronHandlers } from "./server-methods/cron.js";
 import { deviceHandlers } from "./server-methods/devices.js";
 import { execApprovalsHandlers } from "./server-methods/exec-approvals.js";
+import { haHandlers } from "./server-methods/ha.js";
 import { healthHandlers } from "./server-methods/health.js";
 import { logsHandlers } from "./server-methods/logs.js";
 import { modelsHandlers } from "./server-methods/models.js";
@@ -78,6 +79,9 @@ const READ_METHODS = new Set([
   "chat.history",
   "config.get",
   "talk.config",
+  "ha.ping",
+  "ha.listStates",
+  "ha.getState",
 ]);
 const WRITE_METHODS = new Set([
   "send",
@@ -94,6 +98,10 @@ const WRITE_METHODS = new Set([
   "chat.send",
   "chat.abort",
   "browser.request",
+  "ha.callService",
+  "ha.turnOn",
+  "ha.turnOff",
+  "ha.toggle",
 ]);
 
 function authorizeGatewayMethod(method: string, client: GatewayRequestOptions["client"]) {
@@ -178,6 +186,7 @@ export const coreGatewayHandlers: GatewayRequestHandlers = {
   ...cronHandlers,
   ...deviceHandlers,
   ...execApprovalsHandlers,
+  ...haHandlers,
   ...webHandlers,
   ...modelsHandlers,
   ...configHandlers,

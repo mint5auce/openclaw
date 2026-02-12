@@ -24,6 +24,11 @@ import type {
   AgentsListResultSchema,
   AgentsUpdateParamsSchema,
   AgentsUpdateResultSchema,
+  HaCallServiceParamsSchema,
+  HaGetStateParamsSchema,
+  HaListStatesParamsSchema,
+  HaPingParamsSchema,
+  HaServiceActionParamsSchema,
   ModelChoiceSchema,
   ModelsListParamsSchema,
   ModelsListResultSchema,
@@ -213,6 +218,11 @@ export type SkillsBinsParams = Static<typeof SkillsBinsParamsSchema>;
 export type SkillsBinsResult = Static<typeof SkillsBinsResultSchema>;
 export type SkillsInstallParams = Static<typeof SkillsInstallParamsSchema>;
 export type SkillsUpdateParams = Static<typeof SkillsUpdateParamsSchema>;
+export type HaPingParams = Static<typeof HaPingParamsSchema>;
+export type HaListStatesParams = Static<typeof HaListStatesParamsSchema>;
+export type HaGetStateParams = Static<typeof HaGetStateParamsSchema>;
+export type HaCallServiceParams = Static<typeof HaCallServiceParamsSchema>;
+export type HaServiceActionParams = Static<typeof HaServiceActionParamsSchema>;
 export type CronJob = Static<typeof CronJobSchema>;
 export type CronListParams = Static<typeof CronListParamsSchema>;
 export type CronStatusParams = Static<typeof CronStatusParamsSchema>;
