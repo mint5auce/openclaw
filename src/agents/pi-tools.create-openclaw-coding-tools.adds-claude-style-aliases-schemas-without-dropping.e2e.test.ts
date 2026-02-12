@@ -284,6 +284,7 @@ describe("createOpenClawCodingTools", () => {
       "cron",
       "message",
       "gateway",
+      "home_assistant",
       "agents_list",
       "sessions_list",
       "sessions_history",
