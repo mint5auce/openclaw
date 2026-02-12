@@ -92,6 +92,15 @@ primary_region = "iad"
 # Required: Gateway token (for non-loopback binding)
 fly secrets set OPENCLAW_GATEWAY_TOKEN=$(openssl rand -hex 32)
 
+# Optional: IFTTT inbound webhook secrets (recommended for hardened webhook-only exposure)
+fly secrets set IFTTT_PATH_TOKEN=$(openssl rand -hex 32)
+fly secrets set IFTTT_HEADER_TOKEN=$(openssl rand -hex 32)
+
+# Optional: Home Assistant (Nabu Casa) integration
+fly secrets set HA_CLOUD_SUBDOMAIN=your_nabu_casa_subdomain
+fly secrets set HA_CLOUD_TOKEN=your_home_assistant_long_lived_token
+fly secrets set HA_WEBHOOK_SECRET=$(openssl rand -hex 32)
+
 # Model provider API keys
 fly secrets set ANTHROPIC_API_KEY=sk-ant-...
 
@@ -108,6 +117,66 @@ fly secrets set DISCORD_BOT_TOKEN=MTQ...
 - Non-loopback binds (`--bind lan`) require `OPENCLAW_GATEWAY_TOKEN` for security.
 - Treat these tokens like passwords.
 - **Prefer env vars over config file** for all API keys and tokens. This keeps secrets out of `openclaw.json` where they could be accidentally exposed or logged.
+
+### Home Assistant smoke test (optional)
+
+After deploy/restart, test the HA webhook route:
+
+```bash
+curl -X POST "https://<your-app>.fly.dev/ha-webhook" \
+  -H "Content-Type: application/json" \
+  -H "X-HA-Webhook-Secret: ${HA_WEBHOOK_SECRET}" \
+  -d '{
+    "event_type": "state_changed",
+    "occurred_at": "2026-02-12T12:34:56Z",
+    "entity_id": "switch.office_plug",
+    "state": "on"
+  }'
+```
+
+Expected response:
+
+```json
+{ "ok": true, "deduped": false }
+```
+
+### IFTTT inbound webhook (Make a web request)
+
+Endpoint:
+
+- `POST /ifttt-webhook/<IFTTT_PATH_TOKEN>`
+- Header: `X-IFTTT-Token: <IFTTT_HEADER_TOKEN>`
+- Content-Type: `application/json`
+- Body (strict; unexpected keys are rejected):
+
+```json
+{
+  "event_type": "alert_motion",
+  "occurred_at": "2026-02-10T12:34:56Z",
+  "value1": "frontdoor",
+  "value2": "optional",
+  "value3": "optional"
+}
+```
+
+Example URL for an app named `my-openclaw`:
+
+```text
+https://my-openclaw.fly.dev/ifttt-webhook/<IFTTT_PATH_TOKEN>
+```
+
+### Webhook Lockdown Mode (Optional)
+
+If you want the Fly public listener to expose _only_ the webhook endpoints and nothing else, set:
+
+- `OPENCLAW_PUBLIC_WEBHOOK_LOCKDOWN=1`
+
+In this mode, only these public routes are served (everything else returns a vague `404` and WebSocket upgrades are blocked):
+
+- `GET /healthz`
+- `POST /telegram-webhook`
+- `POST /ifttt-webhook/<IFTTT_PATH_TOKEN>`
+- `POST /ha-webhook`
 
 ## 4) Deploy
 
