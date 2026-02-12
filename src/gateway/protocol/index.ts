@@ -180,6 +180,16 @@ import {
   type SkillsBinsParams,
   SkillsBinsParamsSchema,
   type SkillsBinsResult,
+  type HaCallServiceParams,
+  HaCallServiceParamsSchema,
+  type HaGetStateParams,
+  HaGetStateParamsSchema,
+  type HaListStatesParams,
+  HaListStatesParamsSchema,
+  type HaPingParams,
+  HaPingParamsSchema,
+  type HaServiceActionParams,
+  HaServiceActionParamsSchema,
   type SkillsInstallParams,
   SkillsInstallParamsSchema,
   type SkillsStatusParams,
@@ -312,6 +322,14 @@ export const validateSkillsBinsParams = ajv.compile<SkillsBinsParams>(SkillsBins
 export const validateSkillsInstallParams =
   ajv.compile<SkillsInstallParams>(SkillsInstallParamsSchema);
 export const validateSkillsUpdateParams = ajv.compile<SkillsUpdateParams>(SkillsUpdateParamsSchema);
+export const validateHaPingParams = ajv.compile<HaPingParams>(HaPingParamsSchema);
+export const validateHaListStatesParams = ajv.compile<HaListStatesParams>(HaListStatesParamsSchema);
+export const validateHaGetStateParams = ajv.compile<HaGetStateParams>(HaGetStateParamsSchema);
+export const validateHaCallServiceParams =
+  ajv.compile<HaCallServiceParams>(HaCallServiceParamsSchema);
+export const validateHaServiceActionParams = ajv.compile<HaServiceActionParams>(
+  HaServiceActionParamsSchema,
+);
 export const validateCronListParams = ajv.compile<CronListParams>(CronListParamsSchema);
 export const validateCronStatusParams = ajv.compile<CronStatusParams>(CronStatusParamsSchema);
 export const validateCronAddParams = ajv.compile<CronAddParams>(CronAddParamsSchema);
@@ -469,6 +487,11 @@ export {
   AgentsListResultSchema,
   ModelsListParamsSchema,
   SkillsStatusParamsSchema,
+  HaPingParamsSchema,
+  HaListStatesParamsSchema,
+  HaGetStateParamsSchema,
+  HaCallServiceParamsSchema,
+  HaServiceActionParamsSchema,
   SkillsInstallParamsSchema,
   SkillsUpdateParamsSchema,
   CronJobSchema,
@@ -559,6 +582,11 @@ export type {
   SkillsBinsResult,
   SkillsInstallParams,
   SkillsUpdateParams,
+  HaPingParams,
+  HaListStatesParams,
+  HaGetStateParams,
+  HaCallServiceParams,
+  HaServiceActionParams,
   NodePairRejectParams,
   NodePairVerifyParams,
   NodeListParams,
