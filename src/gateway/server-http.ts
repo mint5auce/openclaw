@@ -3,11 +3,13 @@ import type { WebSocketServer } from "ws";
 import { webhookCallback } from "grammy";
 import {
   createServer as createHttpServer,
+  request as httpRequest,
   type Server as HttpServer,
   type IncomingMessage,
   type ServerResponse,
 } from "node:http";
-import { createServer as createHttpsServer } from "node:https";
+import { createServer as createHttpsServer, request as httpsRequest } from "node:https";
+import { Readable } from "node:stream";
 import type { CanvasHostHandler } from "../canvas-host/server.js";
 import type { createSubsystemLogger } from "../logging/subsystem.js";
 import type { GatewayWsClient } from "./server/ws-types.js";
@@ -91,6 +93,271 @@ function isCanvasPath(pathname: string): boolean {
     pathname.startsWith(`${CANVAS_HOST_PATH}/`) ||
     pathname === CANVAS_WS_PATH
   );
+}
+
+const CHAT_BACKEND_BASE_URL_ENV = "CHAT_BACKEND_BASE_URL";
+
+function resolveChatBackendBaseUrl(): URL | null {
+  const raw = process.env[CHAT_BACKEND_BASE_URL_ENV]?.trim();
+  if (!raw) {
+    return null;
+  }
+  try {
+    const parsed = new URL(raw);
+    if (parsed.protocol !== "http:" && parsed.protocol !== "https:") {
+      return null;
+    }
+    return parsed;
+  } catch {
+    return null;
+  }
+}
+
+function isChatBackendWsPath(pathname: string): boolean {
+  return pathname === "/v1/ws" || pathname === "/v1/ws/";
+}
+
+function isChatBackendHttpPath(pathname: string): boolean {
+  return (
+    pathname === "/v1/sessions" ||
+    pathname === "/v1/conversations" ||
+    pathname.startsWith("/v1/conversations/") ||
+    pathname === "/v1/uploads" ||
+    pathname.startsWith("/v1/uploads/") ||
+    pathname === "/v1/devices/apns" ||
+    isChatBackendWsPath(pathname)
+  );
+}
+
+const HOP_BY_HOP_HEADERS = new Set([
+  "connection",
+  "keep-alive",
+  "proxy-authenticate",
+  "proxy-authorization",
+  "te",
+  "trailer",
+  "transfer-encoding",
+  "upgrade",
+]);
+
+function shouldStripResponseHeader(name: string): boolean {
+  return HOP_BY_HOP_HEADERS.has(name.toLowerCase());
+}
+
+function appendForwardedFor(req: IncomingMessage, upstreamHeaders: Headers) {
+  const clientIp = req.socket.remoteAddress;
+  if (!clientIp) {
+    return;
+  }
+  const existing = getHeader(req, "x-forwarded-for");
+  const next = existing ? `${existing}, ${clientIp}` : clientIp;
+  upstreamHeaders.set("x-forwarded-for", next);
+}
+
+function resolvePublicGatewayBases(req: IncomingMessage): {
+  apiBaseUrl: string;
+  wsUrl: string;
+} | null {
+  const host = getHeader(req, "x-forwarded-host") ?? req.headers.host;
+  if (!host) {
+    return null;
+  }
+  const protoHeader = getHeader(req, "x-forwarded-proto") ?? "https";
+  const proto = protoHeader.split(",")[0]?.trim().toLowerCase() === "http" ? "http" : "https";
+  const wsProto = proto === "http" ? "ws" : "wss";
+  return {
+    apiBaseUrl: `${proto}://${host}`,
+    wsUrl: `${wsProto}://${host}/v1/ws`,
+  };
+}
+
+async function readRawBody(req: IncomingMessage): Promise<Buffer> {
+  const chunks: Buffer[] = [];
+  for await (const chunk of req) {
+    if (typeof chunk === "string") {
+      chunks.push(Buffer.from(chunk));
+    } else {
+      chunks.push(chunk);
+    }
+  }
+  return Buffer.concat(chunks);
+}
+
+async function handleChatBackendProxyHttpRequest(
+  req: IncomingMessage,
+  res: ServerResponse,
+  url: URL,
+): Promise<boolean> {
+  const baseUrl = resolveChatBackendBaseUrl();
+  if (!baseUrl || !isChatBackendHttpPath(url.pathname)) {
+    return false;
+  }
+
+  try {
+    const targetUrl = new URL(req.url ?? "/", baseUrl);
+    const method = (req.method ?? "GET").toUpperCase();
+    const upstreamHeaders = new Headers();
+    for (const [name, value] of Object.entries(req.headers)) {
+      const lower = name.toLowerCase();
+      if (value === undefined || lower === "host" || HOP_BY_HOP_HEADERS.has(lower)) {
+        continue;
+      }
+      if (Array.isArray(value)) {
+        for (const item of value) {
+          upstreamHeaders.append(name, item);
+        }
+      } else {
+        upstreamHeaders.set(name, value);
+      }
+    }
+    appendForwardedFor(req, upstreamHeaders);
+    upstreamHeaders.set("x-forwarded-host", req.headers.host ?? "");
+    upstreamHeaders.set("accept-encoding", "identity");
+
+    const requestInit: RequestInit = {
+      method,
+      headers: upstreamHeaders,
+      redirect: "manual",
+    };
+    if (method !== "GET" && method !== "HEAD") {
+      requestInit.body = await readRawBody(req);
+    }
+
+    const upstream = await fetch(targetUrl, requestInit);
+    res.statusCode = upstream.status;
+    const rewriteSessionUrls = url.pathname === "/v1/sessions";
+
+    for (const [name, value] of upstream.headers.entries()) {
+      if (shouldStripResponseHeader(name)) {
+        continue;
+      }
+      if (name.toLowerCase() === "content-encoding") {
+        continue;
+      }
+      if (rewriteSessionUrls && name.toLowerCase() === "content-length") {
+        continue;
+      }
+      res.setHeader(name, value);
+    }
+
+    if (rewriteSessionUrls) {
+      const raw = await upstream.text();
+      let body = raw;
+      const publicBases = resolvePublicGatewayBases(req);
+      if (publicBases) {
+        try {
+          const parsed = JSON.parse(raw) as Record<string, unknown>;
+          if (parsed && typeof parsed === "object") {
+            parsed.api_base_url = publicBases.apiBaseUrl;
+            parsed.ws_url = publicBases.wsUrl;
+            body = JSON.stringify(parsed);
+          }
+        } catch {
+          // ignore parse failures; forward original body
+        }
+      }
+      res.setHeader("content-length", Buffer.byteLength(body));
+      res.end(body);
+      return true;
+    }
+
+    if (!upstream.body) {
+      res.end();
+      return true;
+    }
+
+    Readable.fromWeb(upstream.body as never).pipe(res);
+    return true;
+  } catch {
+    res.statusCode = 502;
+    res.setHeader("Content-Type", "application/json; charset=utf-8");
+    res.end(JSON.stringify({ ok: false, error: "chat_backend_proxy_failed" }));
+    return true;
+  }
+}
+
+function writeRawHttpResponseHead(socket: NodeJS.WritableStream, statusLine: string, rawHeaders: string[]) {
+  socket.write(`${statusLine}\r\n`);
+  for (let i = 0; i < rawHeaders.length; i += 2) {
+    socket.write(`${rawHeaders[i]}: ${rawHeaders[i + 1]}\r\n`);
+  }
+  socket.write("\r\n");
+}
+
+function handleChatBackendProxyUpgrade(req: IncomingMessage, socket: NodeJS.WritableStream, head: Buffer): boolean {
+  const baseUrl = resolveChatBackendBaseUrl();
+  if (!baseUrl) {
+    return false;
+  }
+  const url = new URL(req.url ?? "/", "http://localhost");
+  if (!isChatBackendWsPath(url.pathname)) {
+    return false;
+  }
+
+  const isHttpsTarget = baseUrl.protocol === "https:";
+  const requestUpstream = isHttpsTarget ? httpsRequest : httpRequest;
+  const upstreamReq = requestUpstream({
+    protocol: baseUrl.protocol,
+    hostname: baseUrl.hostname,
+    port: baseUrl.port || (isHttpsTarget ? 443 : 80),
+    method: req.method ?? "GET",
+    path: req.url ?? "/v1/ws",
+    headers: {
+      ...req.headers,
+      host: baseUrl.host,
+      "x-forwarded-host": req.headers.host ?? "",
+    },
+  });
+
+  upstreamReq.once("response", (upstreamRes) => {
+    const statusLine = `HTTP/1.1 ${upstreamRes.statusCode ?? 502} ${upstreamRes.statusMessage ?? "Bad Gateway"}`;
+    writeRawHttpResponseHead(socket, statusLine, upstreamRes.rawHeaders);
+    upstreamRes.pipe(socket as never);
+  });
+
+  upstreamReq.once("upgrade", (upstreamRes, upstreamSocket, upstreamHead) => {
+    const statusLine = `HTTP/1.1 ${upstreamRes.statusCode ?? 101} ${upstreamRes.statusMessage ?? "Switching Protocols"}`;
+    writeRawHttpResponseHead(socket, statusLine, upstreamRes.rawHeaders);
+
+    if (head.length > 0) {
+      upstreamSocket.write(head);
+    }
+    if (upstreamHead.length > 0) {
+      socket.write(upstreamHead);
+    }
+
+    socket.pipe(upstreamSocket);
+    upstreamSocket.pipe(socket as never);
+
+    socket.on("error", () => upstreamSocket.destroy());
+    upstreamSocket.on("error", () => {
+      try {
+        socket.destroy();
+      } catch {
+        // ignore
+      }
+    });
+    socket.on("close", () => upstreamSocket.destroy());
+    upstreamSocket.on("close", () => {
+      try {
+        socket.destroy();
+      } catch {
+        // ignore
+      }
+    });
+  });
+
+  upstreamReq.once("error", () => {
+    try {
+      socket.write("HTTP/1.1 502 Bad Gateway\r\nConnection: close\r\n\r\n");
+      socket.destroy();
+    } catch {
+      // ignore
+    }
+  });
+
+  upstreamReq.end();
+  return true;
 }
 
 function hasAuthorizedWsClientForIp(clients: Set<GatewayWsClient>, clientIp: string): boolean {
@@ -418,6 +685,11 @@ export function createGatewayHttpServer(opts: {
         return;
       }
 
+      // Optional reverse-proxy bridge to the dedicated OpenClaw chat backend.
+      if (await handleChatBackendProxyHttpRequest(req, res, url)) {
+        return;
+      }
+
       if (await handleHooksRequest(req, res)) {
         return;
       }
@@ -526,6 +798,10 @@ export function attachGatewayUpgradeHandler(opts: {
 }) {
   const { httpServer, wss, canvasHost, clients, resolvedAuth } = opts;
   httpServer.on("upgrade", (req, socket, head) => {
+    if (handleChatBackendProxyUpgrade(req, socket, head)) {
+      return;
+    }
+
     if (isPublicWebhookLockdownEnabled()) {
       socket.destroy();
       return;
